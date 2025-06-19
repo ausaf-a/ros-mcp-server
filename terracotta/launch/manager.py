@@ -108,38 +108,41 @@ class LaunchManager:
         return ". ".join(results)
     
     def stop_gazebo(self) -> str:
-        """Stop Gazebo"""
-        if not self.gazebo_process:
-            return "Gazebo not running"
-        
+        """Stop all Gazebo processes"""
         try:
-            self.gazebo_process.terminate()
-            self.gazebo_process.wait(timeout=5)
+            # Kill all gazebo server processes
+            result = subprocess.run(['pkill', '-f', 'ign gazebo server'], 
+                                  capture_output=True, text=True, check=False)
+            
+            # Force kill any remaining gazebo processes
+            subprocess.run(['pkill', '-9', '-f', 'ign gazebo'], 
+                          capture_output=True, text=True, check=False)
+            
             self.gazebo_process = None
-            return "Gazebo stopped"
-        except subprocess.TimeoutExpired:
-            self.gazebo_process.kill()
-            self.gazebo_process = None
-            return "Gazebo force killed"
+            return "All Gazebo processes stopped"
         except Exception as e:
             return f"Error stopping Gazebo: {e}"
     
     def stop_bridge(self) -> str:
-        """Stop ROS bridge"""
-        if not self.bridge_process:
-            return "Bridge not running"
-        
+        """Stop all ROS bridge processes"""
         try:
-            self.bridge_process.terminate()
-            self.bridge_process.wait(timeout=5)
+            # First try graceful kill
+            subprocess.run(['pkill', '-f', 'rosbridge_websocket'], 
+                          capture_output=True, text=True, check=False)
+            time.sleep(1)
+            
+            # Force kill any remaining
+            subprocess.run(['pkill', '-9', '-f', 'rosbridge_websocket'], 
+                          capture_output=True, text=True, check=False)
+            
+            # Also kill launch processes
+            subprocess.run(['pkill', '-f', 'ros2 launch rosbridge_server'], 
+                          capture_output=True, text=True, check=False)
+            
             self.bridge_process = None
-            return "Bridge stopped"
-        except subprocess.TimeoutExpired:
-            self.bridge_process.kill()
-            self.bridge_process = None
-            return "Bridge force killed"
+            return "All ROS bridges stopped"
         except Exception as e:
-            return f"Error stopping bridge: {e}"
+            return f"Error stopping bridges: {e}"
     
     def stop_simulation(self) -> str:
         """Stop complete simulation stack"""
@@ -161,13 +164,34 @@ class LaunchManager:
         return ". ".join(results)
     
     def get_status(self) -> Dict[str, Any]:
-        """Get status of all processes"""
-        return {
-            "gazebo_running": self.gazebo_process and self.gazebo_process.poll() is None,
-            "bridge_running": self.bridge_process and self.bridge_process.poll() is None,
-            "robot_processes": len(self.robot_processes),
-            "active_robots": list(self.robot_processes.keys())
-        }
+        """Get status of all processes using proper command checking"""
+        try:
+            # Check Gazebo status by looking for world topics
+            gazebo_result = subprocess.run(['ign', 'topic', '-l'], 
+                                         capture_output=True, text=True, check=False)
+            gazebo_running = '/world/' in gazebo_result.stdout
+            
+            # Check ROS bridge status by looking for processes
+            bridge_result = subprocess.run(['pgrep', '-f', 'rosbridge_websocket'], 
+                                         capture_output=True, text=True, check=False)
+            bridge_running = bool(bridge_result.stdout.strip())
+            bridge_count = len(bridge_result.stdout.strip().split('\n')) if bridge_running else 0
+            
+            return {
+                "gazebo_running": gazebo_running,
+                "bridge_running": bridge_running,
+                "bridge_instances": bridge_count,
+                "robot_processes": len(self.robot_processes),
+                "active_robots": list(self.robot_processes.keys())
+            }
+        except Exception as e:
+            return {
+                "error": f"Status check failed: {e}",
+                "gazebo_running": False,
+                "bridge_running": False,
+                "robot_processes": 0,
+                "active_robots": []
+            }
     
     def start_robot_nodes(self, robot_name: str, robot_type: str) -> str:
         """Start ROS nodes for a specific robot (placeholder)"""
